@@ -10,7 +10,7 @@ Enrichment:
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -81,12 +81,21 @@ class ChainFetcher:
         cache.write_underlying(ticker, under)
         under["_date"] = pd.to_datetime(under["timestamp"]).dt.date
 
-        # Fetch the entire contract universe for the range once.
+        # Fetch only contracts that could have bars in [start, end].
+        # Cap expiration at end + 2 years: contracts expiring further out are
+        # overwhelmingly un-traded during a historical backfill window.
+        exp_cap = end + timedelta(days=730)
         all_contracts = self.alpaca.list_contracts(
-            ticker, as_of=start, expiration_after=start
+            ticker, as_of=start, expiration_after=start,
+            expiration_before=exp_cap,
         )
         if all_contracts.empty:
             return 0
+        # Drop contracts that had already expired before the first day we need,
+        # then limit to symbols that could possibly have traded during the range.
+        all_contracts = all_contracts[
+            all_contracts["expiration"].dt.date >= start
+        ].copy()
 
         # Fetch all bars for all symbols across the full date range in one pass.
         all_bars = self.alpaca.get_bars_range(
