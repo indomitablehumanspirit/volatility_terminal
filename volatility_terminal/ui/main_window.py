@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.skew_tab, "Skew")
         self.tabs.addTab(self.vrp_tab, "VRP")
         self.vrp_tab.rebuild_requested.connect(self._on_vrp_rebuild)
+        self.vrp_tab.backtest_requested.connect(self._on_vrp_backtest)
         self.sim_tab = SimTab()
         self.sim_tab.set_rates(self.rates)
         self.tabs.addTab(self.sim_tab, "Sim")
@@ -173,6 +174,26 @@ class MainWindow(QMainWindow):
             lambda n: self.statusBar().showMessage(f"Backfill complete ({n} days).")
         )
         worker.signals.failed.connect(self._on_fetch_failed)
+        self.pool.start(worker)
+
+    def _on_vrp_backtest(self, ticker: str, cfg):
+        from ..analytics.straddle_backtest import run_straddle_backtest
+        self.statusBar().showMessage(f"Running short-vol backtest for {ticker}…")
+
+        def run(progress_cb=None):
+            return run_straddle_backtest(ticker, cfg, self.rates,
+                                         progress_cb=progress_cb)
+
+        worker = Worker(run)
+        worker.signals.progress.connect(self.vrp_tab.on_backtest_progress)
+        worker.signals.finished.connect(self.vrp_tab.on_backtest_result)
+        worker.signals.finished.connect(lambda _r: self.statusBar().showMessage(
+            f"Short-vol backtest complete for {ticker}."
+        ))
+        worker.signals.failed.connect(self.vrp_tab.on_backtest_failed)
+        worker.signals.failed.connect(lambda _m: self.statusBar().showMessage(
+            "Backtest failed (see tab)."
+        ))
         self.pool.start(worker)
 
     def _on_vrp_rebuild(self, ticker: str, dte: int):
