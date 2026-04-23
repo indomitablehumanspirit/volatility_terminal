@@ -4,9 +4,9 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
-from PyQt5.QtCore import QThreadPool, Qt
+from PyQt5.QtCore import QThreadPool
 from PyQt5.QtWidgets import (
-    QAction, QLabel, QMainWindow, QMessageBox, QStatusBar, QTabWidget,
+    QAction, QMainWindow, QMessageBox, QStatusBar, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -49,6 +49,20 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.vrp_tab, "VRP")
         self.vrp_tab.rebuild_requested.connect(self._on_vrp_rebuild)
 
+        # Wire comparison panels for Term and Skew tabs
+        self.term_tab.comparison_panel.load_requested.connect(
+            lambda eid, t, d: self._on_comparison_load(self.term_tab, eid, t, d)
+        )
+        self.term_tab.comparison_panel.entry_removed.connect(
+            self.term_tab.remove_comparison
+        )
+        self.skew_tab.comparison_panel.load_requested.connect(
+            lambda eid, t, d: self._on_comparison_load(self.skew_tab, eid, t, d)
+        )
+        self.skew_tab.comparison_panel.entry_removed.connect(
+            self.skew_tab.remove_comparison
+        )
+
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -86,7 +100,9 @@ class MainWindow(QMainWindow):
     def _on_load(self, ticker: str, day: date):
         self.statusBar().showMessage(f"Fetching {ticker} chain for {day}…")
         worker = Worker(self.fetcher.get_chain, ticker, day)
-        worker.signals.finished.connect(lambda df: self._on_chain_ready(ticker, day, df))
+        worker.signals.finished.connect(
+            lambda df: self._on_chain_ready(ticker, day, df)
+        )
         worker.signals.failed.connect(self._on_fetch_failed)
         self.pool.start(worker)
 
@@ -96,8 +112,8 @@ class MainWindow(QMainWindow):
                 f"{ticker} {day}: no chain data returned."
             )
             return
-        self.term_tab.set_chain(chain)
-        self.skew_tab.set_chain(chain)
+        self.term_tab.set_chain(ticker, day, chain)
+        self.skew_tab.set_chain(ticker, day, chain)
         self.surface_tab.set_chain(chain)
         self.vrp_tab.set_ticker(ticker)
         self.statusBar().showMessage(
@@ -108,6 +124,33 @@ class MainWindow(QMainWindow):
     def _on_fetch_failed(self, msg: str):
         self.statusBar().showMessage("Fetch failed (see dialog).")
         QMessageBox.critical(self, "Fetch failed", msg)
+
+    def _on_comparison_load(self, tab, entry_id: int, ticker: str, day: date):
+        self.statusBar().showMessage(f"Fetching comparison {ticker} {day}…")
+        worker = Worker(self.fetcher.get_chain, ticker, day)
+        worker.signals.finished.connect(
+            lambda chain: self._on_comparison_ready(tab, entry_id, ticker, day, chain)
+        )
+        worker.signals.failed.connect(
+            lambda msg: (
+                tab.comparison_panel.set_entry_status(entry_id, "failed"),
+                self.statusBar().showMessage(
+                    f"Comparison fetch failed: {ticker} {day}"
+                ),
+            )
+        )
+        self.pool.start(worker)
+
+    def _on_comparison_ready(
+        self, tab, entry_id: int, ticker: str, day: date, chain: pd.DataFrame
+    ):
+        if chain is None or chain.empty:
+            tab.comparison_panel.set_entry_status(entry_id, "failed")
+            self.statusBar().showMessage(f"No data for {ticker} {day}.")
+            return
+        tab.add_comparison(entry_id, ticker, day, chain)
+        tab.comparison_panel.set_entry_status(entry_id, "ready")
+        self.statusBar().showMessage(f"Comparison loaded: {ticker} {day}.")
 
     def _on_backfill(self, ticker: str, start: date, end: date):
         self.statusBar().showMessage(f"Backfilling {ticker} {start} → {end}…")

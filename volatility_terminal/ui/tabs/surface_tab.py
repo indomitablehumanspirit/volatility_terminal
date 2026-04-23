@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pyqtgraph as pg
 from PyQt5.QtWidgets import QVBoxLayout, QWidget
 
 try:
@@ -10,8 +11,6 @@ try:
     _HAS_GL = True
 except Exception:
     _HAS_GL = False
-
-import pyqtgraph as pg
 
 from ...pricing.surface import build_surface
 
@@ -53,11 +52,12 @@ class SurfaceTab(QWidget):
         self.scatter_item = None
 
         grid = build_surface(chain)
-        k = grid["k_grid"]; tau = grid["tau_grid"]; Z = grid["iv_grid"]
+        k = grid["k_grid"]
+        tau = grid["tau_grid"]
+        Z = grid["iv_grid"]
         if k.size == 0 or tau.size == 0 or Z.size == 0:
             return
 
-        # Normalize axes to -1..1 for nice viewing; keep IV in 0..1 roughly.
         x = np.linspace(-1, 1, len(k))
         y = np.linspace(-1, 1, len(tau))
         z = np.where(np.isfinite(Z), Z, np.nanmean(Z))

@@ -1,9 +1,6 @@
 """VRP tab: ATM-IV timeseries at fixed DTE vs rolling realized vol."""
 from __future__ import annotations
 
-from datetime import date
-
-import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PyQt5.QtCore import Qt, pyqtSignal
