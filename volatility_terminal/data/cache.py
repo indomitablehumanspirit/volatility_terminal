@@ -58,3 +58,18 @@ def write_underlying(ticker: str, df: pd.DataFrame) -> None:
     p = underlying_path(ticker)
     p.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(p, index=False)
+
+
+def earnings_path(ticker: str) -> Path:
+    return CACHE_ROOT / "earnings" / f"{ticker.upper()}.parquet"
+
+
+def read_earnings(ticker: str) -> pd.DataFrame | None:
+    p = earnings_path(ticker)
+    return pd.read_parquet(p) if p.exists() else None
+
+
+def write_earnings(ticker: str, df: pd.DataFrame) -> None:
+    p = earnings_path(ticker)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(p, index=False)

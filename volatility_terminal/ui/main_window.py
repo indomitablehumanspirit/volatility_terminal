@@ -20,6 +20,7 @@ from .tabs.surface_tab import SurfaceTab
 from .tabs.term_tab import TermTab
 from .tabs.vrp_tab import VrpTab
 from .tabs.sim_tab import SimTab
+from .tabs.earnings_tab import EarningsTab
 from .ticker_bar import TickerBar
 from .workers import Worker
 
@@ -52,6 +53,8 @@ class MainWindow(QMainWindow):
         self.sim_tab = SimTab()
         self.sim_tab.set_rates(self.rates)
         self.tabs.addTab(self.sim_tab, "Sim")
+        self.earnings_tab = EarningsTab(self.fetcher)
+        self.tabs.addTab(self.earnings_tab, "Earnings")
 
         # Wire comparison panels for Term and Skew tabs
         self.term_tab.comparison_panel.load_requested.connect(
@@ -120,6 +123,7 @@ class MainWindow(QMainWindow):
         self.skew_tab.set_chain(ticker, day, chain)
         self.surface_tab.set_chain(chain)
         self.vrp_tab.set_ticker(ticker)
+        self.earnings_tab.set_ticker(ticker)
         self.statusBar().showMessage(
             f"{ticker} {day}: {len(chain)} contracts, "
             f"{chain['expiry'].nunique()} expiries, spot=${chain['spot'].iloc[0]:.2f}"
