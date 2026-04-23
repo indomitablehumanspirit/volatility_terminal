@@ -19,6 +19,7 @@ from .tabs.skew_tab import SkewTab
 from .tabs.surface_tab import SurfaceTab
 from .tabs.term_tab import TermTab
 from .tabs.vrp_tab import VrpTab
+from .tabs.sim_tab import SimTab
 from .ticker_bar import TickerBar
 from .workers import Worker
 
@@ -48,6 +49,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.surface_tab, "Surface")
         self.tabs.addTab(self.vrp_tab, "VRP")
         self.vrp_tab.rebuild_requested.connect(self._on_vrp_rebuild)
+        self.sim_tab = SimTab()
+        self.sim_tab.set_rates(self.rates)
+        self.tabs.addTab(self.sim_tab, "Sim")
 
         # Wire comparison panels for Term and Skew tabs
         self.term_tab.comparison_panel.load_requested.connect(
