@@ -16,7 +16,6 @@ from ..data.chain_fetcher import ChainFetcher
 from ..pricing.rates import RateCurve
 from .creds_dialog import CredsDialog, ensure_creds, save_creds
 from .tabs.skew_tab import SkewTab
-from .tabs.surface_tab import SurfaceTab
 from .tabs.term_tab import TermTab
 from .tabs.vrp_tab import VrpTab
 from .tabs.sim_tab import SimTab
@@ -43,11 +42,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.term_tab = TermTab()
         self.skew_tab = SkewTab()
-        self.surface_tab = SurfaceTab()
         self.vrp_tab = VrpTab()
         self.tabs.addTab(self.term_tab, "Term")
         self.tabs.addTab(self.skew_tab, "Skew")
-        self.tabs.addTab(self.surface_tab, "Surface")
         self.tabs.addTab(self.vrp_tab, "VRP")
         self.vrp_tab.rebuild_requested.connect(self._on_vrp_rebuild)
         self.sim_tab = SimTab()
@@ -121,7 +118,6 @@ class MainWindow(QMainWindow):
             return
         self.term_tab.set_chain(ticker, day, chain)
         self.skew_tab.set_chain(ticker, day, chain)
-        self.surface_tab.set_chain(chain)
         self.vrp_tab.set_ticker(ticker)
         self.earnings_tab.set_ticker(ticker)
         self.statusBar().showMessage(
