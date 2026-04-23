@@ -114,8 +114,10 @@ class ChainFetcher:
                     progress_cb(i + 1, total, f"{ticker} {day} (no bars)")
                 continue
 
+            day_symbols = set(day_bars["symbol"])
             day_contracts = all_contracts[
-                all_contracts["expiration"].dt.date >= day
+                (all_contracts["expiration"].dt.date >= day) &
+                (all_contracts["symbol"].isin(day_symbols))
             ].copy()
 
             prior = under[under["_date"] <= day].sort_values("_date")
