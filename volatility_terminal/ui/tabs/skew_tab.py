@@ -1,18 +1,25 @@
 """Skew tab: IV vs log-moneyness, multi-expiry, multi-dataset comparison."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
-    QHBoxLayout, QListWidget, QListWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QHBoxLayout, QHeaderView, QListWidget, QListWidgetItem,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...analytics.skew import skew_for_expiry
+from ...analytics.skew_metrics import delta_skew_metrics
 from ..comparison_panel import ComparisonPanel
 
 # Colormaps per comparison dataset (primary uses viridis)
 _COMP_CMAPS = ["plasma", "inferno", "magma", "cividis"]
+
+_METRIC_COLS = ["Dataset", "Expiry", "DTE", "ATM IV %",
+                "25Δ Put IV %", "25Δ Call IV %", "RR (vol pts)", "BF (vol pts)"]
 
 
 def _nearest_expiry(chain: pd.DataFrame, target_dte: float):
@@ -23,11 +30,21 @@ def _nearest_expiry(chain: pd.DataFrame, target_dte: float):
     return (per_exp * 365.25 - target_dte).abs().idxmin()
 
 
+def _fmt(x, digits=2):
+    if x is None or not np.isfinite(x):
+        return "—"
+    return f"{x:.{digits}f}"
+
+
 class SkewTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(2)
 
         self.plot = pg.PlotWidget()
         self.plot.setBackground("#111")
@@ -38,7 +55,31 @@ class SkewTab(QWidget):
         self.plot.addItem(
             pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen("#888", style=Qt.DashLine))
         )
-        root.addWidget(self.plot, 1)
+        left.addWidget(self.plot, 1)
+
+        self.metrics_table = QTableWidget(0, len(_METRIC_COLS))
+        self.metrics_table.setHorizontalHeaderLabels(_METRIC_COLS)
+        self.metrics_table.verticalHeader().setVisible(False)
+        self.metrics_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.metrics_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.metrics_table.setAlternatingRowColors(True)
+        self.metrics_table.setShowGrid(False)
+        self.metrics_table.setStyleSheet(
+            "QTableWidget { background-color: #111; color: #ddd;"
+            " alternate-background-color: #1a1a1a; gridline-color: #333; }"
+            "QHeaderView::section { background-color: #222; color: #ccc;"
+            " border: 0px; padding: 3px; }"
+        )
+        header = self.metrics_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setStretchLastSection(False)
+        self.metrics_table.setFixedHeight(180)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.Monospace)
+        self.metrics_table.setFont(mono)
+        left.addWidget(self.metrics_table)
+
+        root.addLayout(left, 1)
 
         right = QVBoxLayout()
         right.setContentsMargins(2, 0, 2, 0)
@@ -59,6 +100,7 @@ class SkewTab(QWidget):
         self._primary: tuple | None = None          # (ticker, day, chain)
         self._comparisons: dict[int, tuple] = {}    # entry_id -> (ticker, day, chain)
         self._curves: list = []
+        self._metrics_cache: dict[int, pd.DataFrame] = {}
 
     def set_chain(self, ticker: str, day, chain: pd.DataFrame):
         self._primary = (str(ticker).upper(), day, chain)
@@ -89,6 +131,16 @@ class SkewTab(QWidget):
         self._comparisons.pop(entry_id, None)
         self._redraw()
 
+    def _metrics_for(self, chain: pd.DataFrame) -> pd.DataFrame:
+        if chain is None or chain.empty:
+            return pd.DataFrame()
+        key = id(chain)
+        df = self._metrics_cache.get(key)
+        if df is None:
+            df = delta_skew_metrics(chain)
+            self._metrics_cache[key] = df
+        return df
+
     def _redraw(self):
         for c in self._curves:
             self.plot.removeItem(c)
@@ -96,6 +148,7 @@ class SkewTab(QWidget):
         legend = self.plot.getPlotItem().legend
         if legend is not None:
             legend.clear()
+        self.metrics_table.setRowCount(0)
 
         if self._primary is None:
             return
@@ -120,6 +173,10 @@ class SkewTab(QWidget):
         }
 
         per_exp_primary = chain.groupby("expiry")["tau"].first()
+        pm = self._metrics_for(chain)
+        primary_metrics = pm.set_index("expiry") if not pm.empty else pd.DataFrame()
+
+        table_rows: list[tuple] = []
 
         for i, exp in enumerate(selected):
             tau_val = per_exp_primary.get(exp)
@@ -140,6 +197,13 @@ class SkewTab(QWidget):
                     name=f"{ticker} {day} | {target_dte:.0f}d",
                 )
                 self._curves.append(c)
+
+            if not primary_metrics.empty and exp in primary_metrics.index:
+                row = primary_metrics.loc[exp]
+                label_color = cmap_primary.map(color_pos, mode="qcolor")
+                table_rows.append((
+                    f"{ticker} {day}", pd.Timestamp(exp).date(), row, label_color,
+                ))
 
             # Comparison curves — matched to nearest DTE in each dataset
             for eid in sorted_eids:
@@ -163,3 +227,38 @@ class SkewTab(QWidget):
                     name=f"{comp_ticker} {comp_day} | {matched_dte:.0f}d",
                 )
                 self._curves.append(c2)
+
+                comp_metrics = self._metrics_for(comp_chain)
+                if not comp_metrics.empty:
+                    comp_metrics_i = comp_metrics.set_index("expiry")
+                    if matched_exp in comp_metrics_i.index:
+                        row = comp_metrics_i.loc[matched_exp]
+                        table_rows.append((
+                            f"{comp_ticker} {comp_day}",
+                            pd.Timestamp(matched_exp).date(), row, color,
+                        ))
+
+        self.metrics_table.setRowCount(len(table_rows))
+        for r, (label, exp_date, m, color) in enumerate(table_rows):
+            atm = float(m["atm_iv"]) if np.isfinite(m["atm_iv"]) else float("nan")
+            put25 = float(m["put25_iv"]) if np.isfinite(m["put25_iv"]) else float("nan")
+            call25 = float(m["call25_iv"]) if np.isfinite(m["call25_iv"]) else float("nan")
+            rr = float(m["rr_25d"]) if np.isfinite(m["rr_25d"]) else float("nan")
+            bf = float(m["bf_25d"]) if np.isfinite(m["bf_25d"]) else float("nan")
+            vals = [
+                label,
+                str(exp_date),
+                f"{m['dte']:.0f}",
+                _fmt(atm * 100, 2),
+                _fmt(put25 * 100, 2),
+                _fmt(call25 * 100, 2),
+                _fmt(rr * 100, 2),
+                _fmt(bf * 100, 2),
+            ]
+            for col, text in enumerate(vals):
+                item = QTableWidgetItem(text)
+                if col >= 2:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if col == 0 and isinstance(color, QColor):
+                    item.setForeground(color)
+                self.metrics_table.setItem(r, col, item)
