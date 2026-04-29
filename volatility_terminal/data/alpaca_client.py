@@ -5,11 +5,29 @@ Free-tier friendly: rate-limited, retry on 429, paginates contract lists.
 from __future__ import annotations
 
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
+
+
+class _RateLimiter:
+    """Token-bucket rate limiter safe for multithreaded use."""
+    def __init__(self, rate_per_sec: float):
+        self._interval = 1.0 / rate_per_sec
+        self._lock = threading.Lock()
+        self._next_allowed = time.monotonic()
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait = max(0.0, self._next_allowed - now)
+            self._next_allowed = max(now, self._next_allowed) + self._interval
+        if wait:
+            time.sleep(wait)
 
 _OCC_RE = re.compile(r"^[A-Z]{1,5}\d{6,7}[CP]\d{8}$")
 
@@ -52,6 +70,8 @@ class AlpacaOptionsData:
 
     SYMBOL_BATCH = 100          # option bars request: symbols per call
     RATE_LIMIT_SLEEP = 0.40     # ~150 req/min, under the 200/min free-tier cap
+    BAR_FETCH_WORKERS = 4       # parallel threads for get_bars_range
+    BAR_FETCH_RATE = 3.0        # req/sec shared across all workers (180 req/min)
 
     def __init__(self, creds: AlpacaCreds):
         self.creds = creds
@@ -63,7 +83,8 @@ class AlpacaOptionsData:
 
     def list_contracts(self, underlying: str, as_of: date,
                        expiration_after: date | None = None,
-                       expiration_before: date | None = None) -> pd.DataFrame:
+                       expiration_before: date | None = None,
+                       status_cb=None) -> pd.DataFrame:
         """List option contracts for ``underlying`` that were listed as of ``as_of``.
 
         Filters to contracts whose expiration_date is >= as_of by default so we
@@ -72,12 +93,16 @@ class AlpacaOptionsData:
         exp_after = expiration_after or as_of
         exp_before = expiration_before
         all_rows = []
+        page_num = 0
         # Query both ACTIVE and INACTIVE: a historical chain contains
         # contracts that have since expired (now INACTIVE) alongside those
         # still alive today (ACTIVE).
         for status in (AssetStatus.ACTIVE, AssetStatus.INACTIVE):
             page_token = None
             while True:
+                page_num += 1
+                if status_cb:
+                    status_cb(f"Fetching {underlying} contracts ({status.value}, page {page_num}, {len(all_rows)} so far)...")
                 req = GetOptionContractsRequest(
                     underlying_symbols=[underlying],
                     status=status,
@@ -143,7 +168,8 @@ class AlpacaOptionsData:
             )
             if df is not None and len(df):
                 frames.append(df)
-            time.sleep(self.RATE_LIMIT_SLEEP)
+            if i + self.SYMBOL_BATCH < len(symbols):
+                time.sleep(self.RATE_LIMIT_SLEEP)
         if not frames:
             return pd.DataFrame()
         df = pd.concat(frames).reset_index()
@@ -152,12 +178,15 @@ class AlpacaOptionsData:
                 if c in df.columns]
         return df[keep]
 
-    def get_bars_range(self, symbols: list[str], start_date: date, end_date: date) -> pd.DataFrame:
+    def get_bars_range(self, symbols: list[str], start_date: date, end_date: date,
+                       status_cb=None) -> pd.DataFrame:
         """Daily bars for each option symbol across a date range.
 
         Returns DataFrame with columns [symbol, timestamp, open, high, low,
         close, volume, trade_count, vwap] covering all trading days in the range.
         Prefer this over repeated get_daily_bars calls during backfill.
+        Fetches batches in parallel (BAR_FETCH_WORKERS threads) subject to
+        BAR_FETCH_RATE requests/sec to stay within the free-tier cap.
         """
         symbols = [s for s in symbols if _OCC_RE.match(s)]
         if not symbols:
@@ -169,9 +198,17 @@ class AlpacaOptionsData:
             end = cutoff
         if end <= start:
             return pd.DataFrame()
+
+        batches = [symbols[i:i + self.SYMBOL_BATCH]
+                   for i in range(0, len(symbols), self.SYMBOL_BATCH)]
+        total_batches = len(batches)
+        limiter = _RateLimiter(self.BAR_FETCH_RATE)
         frames = []
-        for i in range(0, len(symbols), self.SYMBOL_BATCH):
-            batch = symbols[i:i + self.SYMBOL_BATCH]
+        count_done = 0
+        results_lock = threading.Lock()
+
+        def _fetch(batch: list[str]) -> pd.DataFrame | None:
+            limiter.acquire()
             req_kwargs = dict(
                 symbol_or_symbols=batch,
                 timeframe=TimeFrame.Day,
@@ -181,12 +218,19 @@ class AlpacaOptionsData:
             if _HAS_OPTIONS_FEED:
                 req_kwargs["feed"] = OptionsFeed.OPRA
             req = OptionBarsRequest(**req_kwargs)
-            df = self._request_with_retry(
-                lambda: self._opt.get_option_bars(req).df
-            )
-            if df is not None and len(df):
-                frames.append(df)
-            time.sleep(self.RATE_LIMIT_SLEEP)
+            return self._request_with_retry(lambda r=req: self._opt.get_option_bars(r).df)
+
+        with ThreadPoolExecutor(max_workers=self.BAR_FETCH_WORKERS) as pool:
+            future_map = {pool.submit(_fetch, b): b for b in batches}
+            for future in as_completed(future_map):
+                df = future.result()
+                with results_lock:
+                    count_done += 1
+                    if status_cb:
+                        status_cb(f"Fetching bars batch {count_done}/{total_batches} ({len(symbols)} symbols)...")
+                    if df is not None and len(df):
+                        frames.append(df)
+
         if not frames:
             return pd.DataFrame()
         df = pd.concat(frames).reset_index()

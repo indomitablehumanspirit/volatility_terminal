@@ -73,8 +73,14 @@ class ChainFetcher:
         days_needed = [d for d in days if d not in cached]
         if not days_needed:
             return 0
+        total = len(days_needed)
+
+        def _status(msg: str) -> None:
+            if progress_cb:
+                progress_cb(0, total, msg)
 
         # Fetch the full underlying price history for the range at once.
+        _status(f"Fetching {ticker} underlying price history...")
         under = self.alpaca.get_daily_stock_bars(ticker, start, end)
         if under is None or under.empty:
             return 0
@@ -85,9 +91,11 @@ class ChainFetcher:
         # Cap expiration at end + 2 years: contracts expiring further out are
         # overwhelmingly un-traded during a historical backfill window.
         exp_cap = end + timedelta(days=730)
+        _status(f"Fetching {ticker} contract universe...")
         all_contracts = self.alpaca.list_contracts(
             ticker, as_of=start, expiration_after=start,
             expiration_before=exp_cap,
+            status_cb=_status,
         )
         if all_contracts.empty:
             return 0
@@ -98,15 +106,16 @@ class ChainFetcher:
         ].copy()
 
         # Fetch all bars for all symbols across the full date range in one pass.
+        _status(f"Fetched {len(all_contracts)} contracts, fetching historical bars...")
         all_bars = self.alpaca.get_bars_range(
-            all_contracts["symbol"].tolist(), start, end
+            all_contracts["symbol"].tolist(), start, end,
+            status_cb=_status,
         )
         if all_bars.empty:
             return 0
         all_bars["_date"] = pd.to_datetime(all_bars["timestamp"]).dt.date
 
         written = 0
-        total = len(days_needed)
         for i, day in enumerate(days_needed):
             day_bars = all_bars[all_bars["_date"] == day].copy()
             if day_bars.empty:
