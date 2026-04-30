@@ -1,8 +1,8 @@
 """Backtest tab — composable signal-driven backtests over historical chains.
 
 Layout (top to bottom):
-  - Toolbar: ticker, date range, structure, direction, qty, run, save/load.
-  - Leg-spec rows (dynamic; rebuilt when structure kind changes).
+  - Toolbar: date range, "Add leg", run, save/load.
+  - Leg-spec rows: free-form, user adds/removes; each row has right/side/DTE/Δ/qty.
   - Structural exits + hedge config (one row each).
   - Splitter:
       Left:  Entry rule + Exit rule.
@@ -30,9 +30,7 @@ from ...analytics.signals import (
     Condition, RuleConfig, signal_from_dict,
 )
 from ...analytics.simulation import HedgeConfig
-from ...analytics.structures import (
-    StructureKind, StructureParams, default_legs,
-)
+from ...analytics.structures import LegSpec, StructureParams
 from ...analytics.tuning import TuningConfig, TuningParam
 from ..rule_widget import RuleWidget
 from ..signal_library import SignalLibrary
@@ -44,35 +42,31 @@ SETTINGS_APP = "VolatilityTerminal"
 CONFIGS_KEY = "backtest/saved_configs"
 
 
-STRUCTURES: list[tuple[str, StructureKind]] = [
-    ("Naked call", "naked_call"),
-    ("Naked put", "naked_put"),
-    ("Straddle", "straddle"),
-    ("Strangle", "strangle"),
-    ("Vertical (call)", "vertical_call"),
-    ("Vertical (put)", "vertical_put"),
-    ("Calendar (call)", "calendar_call"),
-    ("Calendar (put)", "calendar_put"),
-    ("Butterfly (call)", "butterfly_call"),
-    ("Butterfly (put)", "butterfly_put"),
-    ("Iron condor", "iron_condor"),
-]
-
-
 class _LegSpecRow(QWidget):
     changed = pyqtSignal()
+    removed = pyqtSignal(object)   # emits self
 
-    def __init__(self, idx: int, right: str, side: str,
-                 dte: int, delta_target: float | None, parent=None):
+    def __init__(self, right: str, side: str, dte: int,
+                 delta_target: float | None, qty: int = 1, parent=None):
         super().__init__(parent)
-        self.right = right
-        self.side = side
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
 
-        title = QLabel(f"Leg {idx+1}: {side} {right}")
-        title.setMinimumWidth(120)
-        layout.addWidget(title)
+        self.title = QLabel("Leg ?")
+        self.title.setMinimumWidth(50)
+        layout.addWidget(self.title)
+
+        self.right_combo = QComboBox()
+        self.right_combo.addItems(["C", "P"])
+        self.right_combo.setCurrentText(right)
+        self.right_combo.currentIndexChanged.connect(self.changed.emit)
+        layout.addWidget(self.right_combo)
+
+        self.side_combo = QComboBox()
+        self.side_combo.addItems(["short", "long"])
+        self.side_combo.setCurrentText(side)
+        self.side_combo.currentIndexChanged.connect(self.changed.emit)
+        layout.addWidget(self.side_combo)
 
         layout.addWidget(QLabel("DTE:"))
         self.dte = QSpinBox(); self.dte.setRange(1, 730); self.dte.setValue(int(dte))
@@ -93,17 +87,33 @@ class _LegSpecRow(QWidget):
             self.atm_chk.setChecked(True)
             self.delta.setEnabled(False)
         self.atm_chk.stateChanged.connect(self._on_atm_toggle)
+
+        layout.addWidget(QLabel("Qty:"))
+        self.qty_spin = QSpinBox(); self.qty_spin.setRange(1, 10000); self.qty_spin.setValue(int(qty))
+        self.qty_spin.valueChanged.connect(self.changed.emit)
+        layout.addWidget(self.qty_spin)
+
+        self.remove_btn = QPushButton("✕")
+        self.remove_btn.setMaximumWidth(28)
+        self.remove_btn.setToolTip("Remove this leg")
+        self.remove_btn.clicked.connect(lambda: self.removed.emit(self))
+        layout.addWidget(self.remove_btn)
         layout.addStretch(1)
 
     def _on_atm_toggle(self, state):
         self.delta.setEnabled(state != Qt.Checked)
         self.changed.emit()
 
+    def set_index(self, idx: int) -> None:
+        self.title.setText(f"Leg {idx+1}")
+
     def to_spec_kwargs(self) -> dict:
         return {
-            "right": self.right, "side": self.side,
+            "right": self.right_combo.currentText(),
+            "side": self.side_combo.currentText(),
             "dte": self.dte.value(),
             "delta_target": None if self.atm_chk.isChecked() else float(self.delta.value()),
+            "qty": int(self.qty_spin.value()),
         }
 
 
@@ -144,19 +154,9 @@ class BacktestTab(QWidget):
         bar.addWidget(self.end_date)
 
         bar.addSpacing(12)
-        bar.addWidget(QLabel("Structure:"))
-        self.structure_combo = QComboBox()
-        for label, kind in STRUCTURES:
-            self.structure_combo.addItem(label, kind)
-        self.structure_combo.currentIndexChanged.connect(self._rebuild_leg_rows)
-        bar.addWidget(self.structure_combo)
-        bar.addWidget(QLabel("Direction:"))
-        self.direction_combo = QComboBox()
-        self.direction_combo.addItems(["short", "long"])
-        bar.addWidget(self.direction_combo)
-        bar.addWidget(QLabel("Qty:"))
-        self.qty_spin = QSpinBox(); self.qty_spin.setRange(1, 10000); self.qty_spin.setValue(1)
-        bar.addWidget(self.qty_spin)
+        self.add_leg_btn = QPushButton("Add leg")
+        self.add_leg_btn.clicked.connect(self._on_add_leg)
+        bar.addWidget(self.add_leg_btn)
 
         bar.addSpacing(12)
         self.run_btn = QPushButton("Run backtest")
@@ -366,8 +366,10 @@ class BacktestTab(QWidget):
         self._sig_exit_scatter = None
         self._sig_hedge_scatter = None
 
-        # initial leg rows
-        self._rebuild_leg_rows()
+        # initial leg rows: one default short ATM call at 30 DTE
+        self._add_leg_row(LegSpec(right="C", side="short", dte=30, delta_target=None, qty=1))
+        self._renumber_leg_rows()
+        self._rebuild_tune_params_table()
 
     # ------------------------------------------------------------------
     # Public API
@@ -379,36 +381,39 @@ class BacktestTab(QWidget):
     # ------------------------------------------------------------------
     # Leg row management
 
-    def _current_kind(self) -> StructureKind:
-        return self.structure_combo.currentData()
+    def _add_leg_row(self, spec: LegSpec) -> _LegSpecRow:
+        row = _LegSpecRow(spec.right, spec.side, spec.dte, spec.delta_target, spec.qty)
+        row.removed.connect(self._on_remove_leg)
+        self._legs_layout.addWidget(row)
+        self._leg_rows.append(row)
+        return row
 
-    def _rebuild_leg_rows(self):
-        # Clear existing
+    def _renumber_leg_rows(self) -> None:
+        for i, row in enumerate(self._leg_rows):
+            row.set_index(i)
+
+    def _clear_leg_rows(self) -> None:
         for row in self._leg_rows:
             self._legs_layout.removeWidget(row)
             row.setParent(None); row.deleteLater()
         self._leg_rows = []
 
-        kind = self._current_kind()
-        defaults = default_legs(kind)
-        for i, spec in enumerate(defaults):
-            row = _LegSpecRow(i, spec.right, spec.side, spec.dte, spec.delta_target)
-            self._legs_layout.addWidget(row)
-            self._leg_rows.append(row)
+    def _on_add_leg(self) -> None:
+        self._add_leg_row(LegSpec(right="C", side="short", dte=30, delta_target=None, qty=1))
+        self._renumber_leg_rows()
+        self._rebuild_tune_params_table()
+
+    def _on_remove_leg(self, row: _LegSpecRow) -> None:
+        if row in self._leg_rows:
+            self._leg_rows.remove(row)
+        self._legs_layout.removeWidget(row)
+        row.setParent(None); row.deleteLater()
+        self._renumber_leg_rows()
         self._rebuild_tune_params_table()
 
     def _build_structure_params(self) -> StructureParams:
-        kind = self._current_kind()
-        legs = []
-        from ...analytics.structures import LegSpec
-        for row in self._leg_rows:
-            legs.append(LegSpec(**row.to_spec_kwargs()))
-        return StructureParams(
-            kind=kind,
-            direction=self.direction_combo.currentText(),
-            qty=self.qty_spin.value(),
-            legs=legs,
-        )
+        legs = [LegSpec(**row.to_spec_kwargs()) for row in self._leg_rows]
+        return StructureParams(legs=legs)
 
     # ------------------------------------------------------------------
     # Config build / apply
@@ -444,21 +449,11 @@ class BacktestTab(QWidget):
         if cfg.end:
             self.end_date.setDate(QDate(cfg.end.year, cfg.end.month, cfg.end.day))
 
-        # Structure
-        idx = self.structure_combo.findData(cfg.structure.kind)
-        if idx >= 0:
-            self.structure_combo.setCurrentIndex(idx)
-        self.direction_combo.setCurrentText(cfg.structure.direction)
-        self.qty_spin.setValue(cfg.structure.qty)
-
         # Repopulate leg rows from the stored spec exactly
-        for row in self._leg_rows:
-            self._legs_layout.removeWidget(row); row.setParent(None); row.deleteLater()
-        self._leg_rows = []
-        for i, spec in enumerate(cfg.structure.legs):
-            row = _LegSpecRow(i, spec.right, spec.side, spec.dte, spec.delta_target)
-            self._legs_layout.addWidget(row)
-            self._leg_rows.append(row)
+        self._clear_leg_rows()
+        for spec in cfg.structure.legs:
+            self._add_leg_row(spec)
+        self._renumber_leg_rows()
 
         self.cb_dte_exit.setChecked(cfg.use_dte_exit)
         self.sp_dte_exit.setValue(cfg.dte_exit_threshold)
@@ -477,6 +472,8 @@ class BacktestTab(QWidget):
 
         self.entry_rule.set_from_config(cfg.entry_rule)
         self.exit_rule.set_from_config(cfg.exit_rule)
+
+        self._rebuild_tune_params_table()
 
     # ------------------------------------------------------------------
     # Signal preview chart

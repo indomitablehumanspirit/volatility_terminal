@@ -14,8 +14,7 @@ class BacktestConfig:
     start: date | None = None
     end: date | None = None
 
-    structure: StructureParams = field(
-        default_factory=lambda: StructureParams(kind="straddle"))
+    structure: StructureParams = field(default_factory=StructureParams)
 
     entry_rule: RuleConfig = field(default_factory=RuleConfig)
     exit_rule: RuleConfig = field(default_factory=RuleConfig)
@@ -65,7 +64,7 @@ class BacktestConfig:
         return cls(
             start=date.fromisoformat(d["start"]) if d.get("start") else None,
             end=date.fromisoformat(d["end"]) if d.get("end") else None,
-            structure=StructureParams.from_dict(d.get("structure", {"kind": "straddle"})),
+            structure=StructureParams.from_dict(d.get("structure", {})),
             entry_rule=RuleConfig.from_dict(d.get("entry_rule", {})),
             exit_rule=RuleConfig.from_dict(d.get("exit_rule", {})),
             use_dte_exit=bool(d.get("use_dte_exit", False)),
