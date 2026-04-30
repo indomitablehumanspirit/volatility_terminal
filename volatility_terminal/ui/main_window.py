@@ -20,6 +20,7 @@ from .tabs.term_tab import TermTab
 from .tabs.vrp_tab import VrpTab
 from .tabs.sim_tab import SimTab
 from .tabs.earnings_tab import EarningsTab
+from .tabs.backtest_tab import BacktestTab
 from .ticker_bar import TickerBar
 from .workers import Worker
 
@@ -53,6 +54,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.sim_tab, "Sim")
         self.earnings_tab = EarningsTab(self.fetcher)
         self.tabs.addTab(self.earnings_tab, "Earnings")
+        self.backtest_tab = BacktestTab()
+        self.backtest_tab.backtest_requested.connect(self._on_backtest_run)
+        self.tabs.addTab(self.backtest_tab, "Backtest")
 
         # Wire comparison panels for Term and Skew tabs
         self.term_tab.comparison_panel.load_requested.connect(
@@ -121,6 +125,7 @@ class MainWindow(QMainWindow):
         self.skew_tab.set_chain(ticker, day, chain)
         self.vrp_tab.set_ticker(ticker)
         self.earnings_tab.set_ticker(ticker)
+        self.backtest_tab.set_ticker(ticker)
         self.statusBar().showMessage(
             f"{ticker} {day}: {len(chain)} contracts, "
             f"{chain['expiry'].nunique()} expiries, spot=${chain['spot'].iloc[0]:.2f}"
@@ -191,6 +196,25 @@ class MainWindow(QMainWindow):
             f"Short-vol backtest complete for {ticker}."
         ))
         worker.signals.failed.connect(self.vrp_tab.on_backtest_failed)
+        worker.signals.failed.connect(lambda _m: self.statusBar().showMessage(
+            "Backtest failed (see tab)."
+        ))
+        self.pool.start(worker)
+
+    def _on_backtest_run(self, ticker: str, cfg):
+        from ..analytics.backtest_engine import run_backtest
+        self.statusBar().showMessage(f"Running backtest for {ticker}…")
+
+        def run(progress_cb=None):
+            return run_backtest(ticker, cfg, self.rates, progress_cb=progress_cb)
+
+        worker = Worker(run)
+        worker.signals.progress.connect(self.backtest_tab.on_backtest_progress)
+        worker.signals.finished.connect(self.backtest_tab.on_backtest_result)
+        worker.signals.finished.connect(lambda _r: self.statusBar().showMessage(
+            f"Backtest complete for {ticker}."
+        ))
+        worker.signals.failed.connect(self.backtest_tab.on_backtest_failed)
         worker.signals.failed.connect(lambda _m: self.statusBar().showMessage(
             "Backtest failed (see tab)."
         ))
