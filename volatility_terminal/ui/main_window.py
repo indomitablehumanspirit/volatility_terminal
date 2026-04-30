@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.earnings_tab, "Earnings")
         self.backtest_tab = BacktestTab()
         self.backtest_tab.backtest_requested.connect(self._on_backtest_run)
+        self.backtest_tab.tune_requested.connect(self._on_tune_run)
         self.tabs.addTab(self.backtest_tab, "Backtest")
 
         # Wire comparison panels for Term and Skew tabs
@@ -217,6 +218,26 @@ class MainWindow(QMainWindow):
         worker.signals.failed.connect(self.backtest_tab.on_backtest_failed)
         worker.signals.failed.connect(lambda _m: self.statusBar().showMessage(
             "Backtest failed (see tab)."
+        ))
+        self.pool.start(worker)
+
+    def _on_tune_run(self, ticker: str, base_cfg, tuning_cfg):
+        from ..analytics.tuning import run_tuning
+        self.statusBar().showMessage(f"Tuning backtest for {ticker}…")
+
+        def run(progress_cb=None):
+            return run_tuning(ticker, base_cfg, tuning_cfg, self.rates,
+                              progress_cb=progress_cb)
+
+        worker = Worker(run)
+        worker.signals.progress.connect(self.backtest_tab.on_tune_progress)
+        worker.signals.finished.connect(self.backtest_tab.on_tune_result)
+        worker.signals.finished.connect(lambda _r: self.statusBar().showMessage(
+            f"Tuning complete for {ticker}."
+        ))
+        worker.signals.failed.connect(self.backtest_tab.on_tune_failed)
+        worker.signals.failed.connect(lambda _m: self.statusBar().showMessage(
+            "Tuning failed (see tab)."
         ))
         self.pool.start(worker)
 
