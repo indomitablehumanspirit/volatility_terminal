@@ -17,7 +17,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from PyQt5.QtCore import QDate, QSettings, Qt, pyqtSignal
+from PyQt5.QtCore import QDate, QSettings, Qt, QThreadPool, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
@@ -34,6 +34,7 @@ from ...analytics.structures import LegSpec, StructureParams
 from ...analytics.tuning import TuningConfig, TuningParam
 from ..rule_widget import RuleWidget
 from ..signal_library import SignalLibrary
+from ..workers import Worker
 from .tuning_results_widget import TuningResultsWidget
 
 
@@ -365,6 +366,8 @@ class BacktestTab(QWidget):
         self._sig_entry_scatter = None
         self._sig_exit_scatter = None
         self._sig_hedge_scatter = None
+        self._sig_worker = None
+        self._sig_generation = 0
 
         # initial leg rows: one default short ATM call at 30 DTE
         self._add_leg_row(LegSpec(right="C", side="short", dte=30, delta_target=None, qty=1))
@@ -498,16 +501,39 @@ class BacktestTab(QWidget):
                 "Load a ticker and click a condition row to preview its signal.")
             return
 
-        # Build the signal from the condition's current dict
         cfg = self._active_cond_widget.to_config()
         if cfg is None:
             self.signal_hint.setText("Condition has no signal selected.")
             return
-        try:
-            sig = signal_from_dict(cfg.signal)
-            series = sig.series(self._ticker)
-        except Exception as e:
-            self.signal_hint.setText(f"Could not compute signal: {e}")
+
+        self._sig_generation += 1
+        gen = self._sig_generation
+        sig_dict = cfg.signal
+        ticker = self._ticker
+        threshold = cfg.threshold
+
+        self.signal_hint.setText("Computing signal…")
+
+        def _compute():
+            sig = signal_from_dict(sig_dict)
+            return sig.series(ticker)
+
+        worker = Worker(_compute)
+        worker.signals.finished.connect(
+            lambda series, _g=gen, _t=threshold: self._on_signal_ready(
+                series, _g, _t))
+        worker.signals.failed.connect(
+            lambda msg, _g=gen: self._on_signal_failed(msg, _g))
+        self._sig_worker = worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_signal_failed(self, msg: str, generation: int):
+        if generation != self._sig_generation:
+            return
+        self.signal_hint.setText(f"Could not compute signal: {msg}")
+
+    def _on_signal_ready(self, series, generation: int, threshold: float):
+        if generation != self._sig_generation:
             return
         if series is None or series.empty:
             self.signal_hint.setText("Signal series is empty for this ticker.")
@@ -525,18 +551,18 @@ class BacktestTab(QWidget):
         xs_v = xs[valid]
         ys_v = ys[valid]
 
-        name = self._active_cond_widget.selected_signal_name()
+        name = (self._active_cond_widget.selected_signal_name()
+                if self._active_cond_widget else "Signal")
         self._sig_curve = self.signal_plot.plot(
             xs_v, ys_v, pen=pg.mkPen("#4aa3ff", width=2), name=name)
-        # Threshold line
         self._sig_threshold_line = pg.InfiniteLine(
-            pos=cfg.threshold, angle=0,
+            pos=threshold, angle=0,
             pen=pg.mkPen("#ffd166", width=1, style=Qt.DashLine))
         self.signal_plot.addItem(self._sig_threshold_line)
 
         self.signal_plot.setLabel("left", name)
         self.signal_hint.setText(
-            f"{name} • {len(xs_v):,} points • threshold = {cfg.threshold:g}"
+            f"{name} • {len(xs_v):,} points • threshold = {threshold:g}"
             + (f" • role: {self._active_cond_role}" if self._active_cond_role else "")
         )
 

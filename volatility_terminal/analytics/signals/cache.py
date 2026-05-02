@@ -1,15 +1,19 @@
 """Per-process memoization for signal series, keyed on (signal_hash, ticker)."""
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import pandas as pd
 
-_CACHE: dict[tuple[str, str], pd.Series] = {}
+_MAX_ENTRIES = 256
+_CACHE: OrderedDict[tuple[str, str], pd.Series] = OrderedDict()
 
 
 def get_or_compute(signal, ticker: str) -> pd.Series:
     key = (signal.hash_key(), ticker.upper())
     hit = _CACHE.get(key)
     if hit is not None:
+        _CACHE.move_to_end(key)
         return hit
     s = signal._compute(ticker)
     if s is not None:
@@ -22,6 +26,8 @@ def get_or_compute(signal, ticker: str) -> pd.Series:
         except Exception:
             pass
     _CACHE[key] = s
+    while len(_CACHE) > _MAX_ENTRIES:
+        _CACHE.popitem(last=False)
     return s
 
 

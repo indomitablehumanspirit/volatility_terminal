@@ -67,10 +67,10 @@ def compute_objective(result: BacktestResult, objective: str,
     eq = result.equity_curve
     if eq.empty:
         return -np.inf
-    daily = eq["daily_pnl"].values
     if objective == "profit_factor":
-        wins = daily[daily > 0].sum()
-        losses = -daily[daily < 0].sum()
+        trade_pnls = np.array([t.pnl for t in result.trades])
+        wins = trade_pnls[trade_pnls > 0].sum()
+        losses = -trade_pnls[trade_pnls < 0].sum()
         if losses == 0:
             return np.inf if wins > 0 else 0.0
         return float(wins / losses)
