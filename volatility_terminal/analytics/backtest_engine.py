@@ -221,9 +221,8 @@ def run_backtest(
 
         # If position open: mark-to-market, hedge, maybe close
         closed_this_bar = False
+        day_chain = cache.read_chain(ticker, day)
         if open_legs is not None:
-            day_chain = cache.read_chain(ticker, day)
-
             leg_val_total = 0.0
             port_delta = float(shares_held)
             any_expired = False
@@ -241,6 +240,7 @@ def run_backtest(
                     port_delta += leg.qty * g.get("delta", 0.0) * 100
 
             open_pnl = credit + leg_val_total
+            net_pnl = open_pnl + hedge_cash + shares_held * spot
 
             # Delta hedge (skip on entry day)
             if not any_expired and i > entry_day_idx and config.hedge is not None:
@@ -279,19 +279,11 @@ def run_backtest(
                               for leg in open_legs)
                 if min_dte <= config.dte_exit_threshold:
                     reason = "dte_touch"
-            if reason is None and config.use_stop_loss and credit > 0:
-                if open_pnl <= -config.stop_loss_pct / 100.0 * credit:
+            if reason is None and config.use_stop_loss:
+                if net_pnl <= -config.stop_loss_pct / 100.0 * abs(credit):
                     reason = "stop_loss"
-            if reason is None and config.use_profit_target and credit > 0:
-                if open_pnl >= config.profit_target_pct / 100.0 * credit:
-                    reason = "profit_target"
-            # Generalize PT/SL for debit (long) trades: credit < 0 means we paid.
-            if reason is None and config.use_stop_loss and credit < 0:
-                # Stop loss as % of debit paid (loss > stop_loss_pct of |credit|)
-                if open_pnl <= -config.stop_loss_pct / 100.0 * abs(credit):
-                    reason = "stop_loss"
-            if reason is None and config.use_profit_target and credit < 0:
-                if open_pnl >= config.profit_target_pct / 100.0 * abs(credit):
+            if reason is None and config.use_profit_target:
+                if net_pnl >= config.profit_target_pct / 100.0 * abs(credit):
                     reason = "profit_target"
 
             if reason is not None:
@@ -307,13 +299,11 @@ def run_backtest(
             if config.rearm == "edge_only":
                 ok_to_arm = ok_to_arm and (not prev_entry_signal_value)
             if ok_to_arm:
-                day_chain = cache.read_chain(ticker, day)
                 if day_chain is not None and not day_chain.empty:
                     _open_trade(i, day, day_chain)
 
         # Equity snapshot
         if open_legs is not None:
-            day_chain = cache.read_chain(ticker, day)
             mtm = 0.0
             for leg in open_legs:
                 if day >= leg.expiry.date():

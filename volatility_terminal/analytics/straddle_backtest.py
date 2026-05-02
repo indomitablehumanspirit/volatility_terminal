@@ -340,9 +340,8 @@ def run_straddle_backtest(
 
         # If position open, mark-to-market, hedge, maybe close
         closed_this_bar = False
+        day_chain = cache.read_chain(ticker, day)
         if open_legs is not None:
-            day_chain = cache.read_chain(ticker, day)
-
             # Reprice & greeks, settle expired intrinsically
             leg_val_total = 0.0
             port_delta = float(shares_held)
@@ -360,7 +359,8 @@ def run_straddle_backtest(
                     leg_val_total += leg.qty * price * 100
                     port_delta += leg.qty * g.get("delta", 0.0) * 100
 
-            open_pnl = credit + leg_val_total  # running P/L on option side
+            open_pnl = credit + leg_val_total
+            net_pnl = open_pnl + hedge_cash + shares_held * spot
 
             # Delta hedge (skip on entry day itself)
             if not any_expired and i > entry_day_idx and config.hedge is not None:
@@ -392,11 +392,11 @@ def run_straddle_backtest(
                 min_dte = min(max((leg.expiry.date() - day).days, 0) for leg in open_legs)
                 if min_dte <= config.dte_exit_threshold:
                     reason = "dte_touch"
-            if reason is None and config.use_stop_loss and credit > 0:
-                if open_pnl <= -config.stop_loss_pct / 100.0 * credit:
+            if reason is None and config.use_stop_loss:
+                if net_pnl <= -config.stop_loss_pct / 100.0 * abs(credit):
                     reason = "stop_loss"
-            if reason is None and config.use_profit_target and credit > 0:
-                if open_pnl >= config.profit_target_pct / 100.0 * credit:
+            if reason is None and config.use_profit_target:
+                if net_pnl >= config.profit_target_pct / 100.0 * abs(credit):
                     reason = "profit_target"
 
             if reason is not None:
@@ -410,7 +410,6 @@ def run_straddle_backtest(
         if open_legs is None and not closed_this_bar:
             # Only try entering if filters pass (or none set)
             if filter_passes(day):
-                day_chain = cache.read_chain(ticker, day)
                 if day_chain is not None and not day_chain.empty:
                     open_trade(i, day, day_chain)
         elif open_legs is None and closed_this_bar:
@@ -422,9 +421,7 @@ def run_straddle_backtest(
             # still open after all the above
             # recompute mark for snapshot consistency
             # (leg_val_total from above if not closed, else position was reset)
-            # Simpler: recompute fresh here.
             mtm = 0.0
-            day_chain = cache.read_chain(ticker, day)
             for leg in open_legs:
                 if day >= leg.expiry.date():
                     intrinsic = max(0.0, (spot - leg.strike) if leg.right == "C" else (leg.strike - spot))
