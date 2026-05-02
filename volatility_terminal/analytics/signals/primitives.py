@@ -225,7 +225,7 @@ def _skew_at_delta_daily(ticker: str, target_delta: float) -> pd.DataFrame:
         df["date"] = pd.Timestamp(d)
         rows.append(df)
     out = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
-    _DAILY_CACHE[key] = out
+    _daily_cache_put(key, out)
     return out
 
 
@@ -233,7 +233,17 @@ def _term_one(chain: pd.DataFrame) -> pd.DataFrame:
     return term_structure(chain)
 
 
+_DAILY_CACHE_MAX = 64
+
 _DAILY_CACHE: dict[tuple[str, str], pd.DataFrame] = {}
+
+
+def _daily_cache_put(key: tuple[str, str], value: pd.DataFrame) -> None:
+    if key in _DAILY_CACHE:
+        _DAILY_CACHE.pop(key)
+    elif len(_DAILY_CACHE) >= _DAILY_CACHE_MAX:
+        _DAILY_CACHE.pop(next(iter(_DAILY_CACHE)))
+    _DAILY_CACHE[key] = value
 
 
 def _walk_chains(ticker: str, kind: str, fn) -> pd.DataFrame:
@@ -259,7 +269,7 @@ def _walk_chains(ticker: str, kind: str, fn) -> pd.DataFrame:
         out = pd.DataFrame()
     else:
         out = pd.concat(rows, ignore_index=True)
-    _DAILY_CACHE[key] = out
+    _daily_cache_put(key, out)
     return out
 
 

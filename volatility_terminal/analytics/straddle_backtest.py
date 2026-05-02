@@ -18,7 +18,7 @@ from ..data import cache
 from .realized import close_to_close
 from .iv_timeseries import build_iv_timeseries
 from .vrp import compute_vrp
-from .simulation import HedgeConfig, Leg, _bs_reprice
+from .simulation import HedgeConfig, Leg, _bs_reprice, _price_and_greeks
 from ..pricing.rates import RateCurve
 
 
@@ -154,29 +154,6 @@ def _pick_legs(chain: pd.DataFrame, expiry: pd.Timestamp, cfg: StraddleBacktestC
             entry_price=mid,
         ))
     return legs
-
-
-def _price_and_greeks(leg: Leg, day: date, chain: pd.DataFrame | None,
-                      spot: float, last_iv: dict, last_q: dict,
-                      rates: RateCurve) -> tuple[float, dict]:
-    if chain is not None and not chain.empty:
-        rows = chain[chain["symbol"] == leg.symbol]
-        if not rows.empty:
-            row = rows.iloc[0]
-            mid = float(row["mid"])
-            if np.isfinite(mid):
-                g = {
-                    "delta": float(row["delta"]) if np.isfinite(row["delta"]) else 0.0,
-                    "gamma": float(row["gamma"]) if np.isfinite(row["gamma"]) else 0.0,
-                    "vega": float(row["vega"]) if np.isfinite(row["vega"]) else 0.0,
-                    "theta": float(row["theta"]) if np.isfinite(row["theta"]) else 0.0,
-                }
-                if np.isfinite(row["iv"]):
-                    last_iv[leg.symbol] = float(row["iv"])
-                if np.isfinite(row["q"]):
-                    last_q[leg.expiry] = float(row["q"])
-                return mid, g
-    return _bs_reprice(leg, spot, day, last_iv, last_q, rates)
 
 
 # ---------------------------------------------------------------------------

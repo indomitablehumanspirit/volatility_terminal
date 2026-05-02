@@ -180,23 +180,23 @@ class ChainFetcher:
                       on="_exp_key", how="left").drop(columns=["_exp_key"])
         df = df.dropna(subset=["r", "forward", "q"])
 
-        ivs, deltas, gammas, vegas, thetas, rhos = [], [], [], [], [], []
-        for row in df.itertuples(index=False):
-            iv = bs.implied_vol(row.mid, row.spot, row.strike, row.tau,
-                                row.r, row.right, row.q)
-            g = (bs.greeks(row.spot, row.strike, row.tau, row.r, iv,
-                           row.right, row.q)
-                 if np.isfinite(iv)
-                 else dict(delta=np.nan, gamma=np.nan, vega=np.nan,
-                           theta=np.nan, rho=np.nan))
-            ivs.append(iv); deltas.append(g["delta"]); gammas.append(g["gamma"])
-            vegas.append(g["vega"]); thetas.append(g["theta"]); rhos.append(g["rho"])
-        df["iv"] = ivs
-        df["delta"] = deltas
-        df["gamma"] = gammas
-        df["vega"] = vegas
-        df["theta"] = thetas
-        df["rho"] = rhos
+        df["iv"] = [
+            bs.implied_vol(mid, s, k, t, r, right, q)
+            for mid, s, k, t, r, right, q
+            in zip(df["mid"], df["spot"], df["strike"],
+                   df["tau"], df["r"], df["right"], df["q"])
+        ]
+
+        g = bs.greeks_vec(
+            df["spot"].values, df["strike"].values, df["tau"].values,
+            df["r"].values, df["iv"].values, df["right"].values,
+            df["q"].values,
+        )
+        df["delta"] = g["delta"]
+        df["gamma"] = g["gamma"]
+        df["vega"] = g["vega"]
+        df["theta"] = g["theta"]
+        df["rho"] = g["rho"]
 
         out_cols = ["symbol", "expiry", "expiry_ts", "right", "strike", "tau",
                     "close", "volume", "mid", "spot", "r", "q", "forward",

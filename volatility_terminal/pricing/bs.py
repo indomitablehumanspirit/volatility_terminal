@@ -48,6 +48,58 @@ def greeks(S, K, tau, r, sigma, right, q=0.0):
     return dict(delta=delta, gamma=gamma_, vega=vega, theta=theta, rho=rho)
 
 
+def greeks_vec(S, K, tau, r, sigma, right, q=0.0):
+    """Vectorized greeks for arrays of options. Returns dict of numpy arrays."""
+    S = np.asarray(S, dtype=float)
+    K = np.asarray(K, dtype=float)
+    tau = np.asarray(tau, dtype=float)
+    r = np.asarray(r, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
+    q = np.asarray(q, dtype=float)
+    is_call = np.asarray(right) == "C"
+
+    valid = (tau > 0) & (sigma > 0) & (S > 0) & (K > 0) & np.isfinite(sigma)
+
+    sqrt_t = np.where(valid, np.sqrt(np.where(valid, tau, 1.0)), 1.0)
+    sig_safe = np.where(valid, sigma, 1.0)
+    d1 = np.where(valid,
+                  (np.log(S / np.where(K > 0, K, 1.0))
+                   + (r - q + 0.5 * sig_safe ** 2) * tau) / (sig_safe * sqrt_t),
+                  0.0)
+    d2 = d1 - sig_safe * sqrt_t
+
+    pdf_d1 = norm.pdf(d1)
+    disc_r = np.exp(-r * tau)
+    disc_q = np.exp(-q * tau)
+
+    gamma = np.where(valid, disc_q * pdf_d1 / (S * sig_safe * sqrt_t), np.nan)
+    vega = np.where(valid, S * disc_q * pdf_d1 * sqrt_t / 100.0, np.nan)
+
+    cdf_d1 = norm.cdf(d1)
+    cdf_d2 = norm.cdf(d2)
+    cdf_nd1 = norm.cdf(-d1)
+    cdf_nd2 = norm.cdf(-d2)
+
+    common_theta = -S * disc_q * pdf_d1 * sig_safe / (2 * sqrt_t)
+
+    delta = np.where(valid,
+                     np.where(is_call, disc_q * cdf_d1, -disc_q * cdf_nd1),
+                     np.nan)
+    theta = np.where(valid,
+                     np.where(is_call,
+                              common_theta - r * K * disc_r * cdf_d2 + q * S * disc_q * cdf_d1,
+                              common_theta + r * K * disc_r * cdf_nd2 - q * S * disc_q * cdf_nd1)
+                     / 365.0,
+                     np.nan)
+    rho = np.where(valid,
+                   np.where(is_call,
+                            K * tau * disc_r * cdf_d2 / 100.0,
+                            -K * tau * disc_r * cdf_nd2 / 100.0),
+                   np.nan)
+
+    return dict(delta=delta, gamma=gamma, vega=vega, theta=theta, rho=rho)
+
+
 def implied_vol(price, S, K, tau, r, right, q=0.0):
     if price is None or not np.isfinite(price) or price <= 0 or tau <= 0:
         return np.nan
